@@ -39,20 +39,22 @@ return [
             'prefix' => '',
         ],
 
-        'mysql' => [
-            'driver' => 'mysql',
-            'host' => env('DB_HOST', '127.0.0.1'),
-            'port' => env('DB_PORT', '3306'),
-            'database' => env('DB_DATABASE', 'forge'),
-            'username' => env('DB_USERNAME', 'forge'),
-            'password' => env('DB_PASSWORD', ''),
-            'unix_socket' => env('DB_SOCKET', ''),
-            'charset' => 'utf8mb4',
-            'collation' => 'utf8mb4_unicode_ci',
-            'prefix' => '',
-            'strict' => true,
-            'engine' => null,
-        ],
+        'mysql' => array_merge(
+            json_decode(env('MYSQL_DEFAULT_OPTIONS'), true) ?: [ // 兼容初始配置选项
+                'driver'    => 'mysql',
+                'charset'   => 'utf8mb4',
+                'collation' => 'utf8mb4_unicode_ci',
+                'prefix'    => '',
+                'strict'    => true,
+            ],
+            json_decode(env('MYSQL_DEFAULT_PARAMS'), true) ?: [// 兼容初始配置参数 参数可覆盖选项 以支持主从配置
+                'host'     => env('DB_HOST', '127.0.0.1'),
+                'port'     => env('DB_PORT', '3306'),
+                'database' => env('DB_DATABASE', 'forge'),
+                'username' => env('DB_USERNAME', 'forge'),
+                'password' => env('DB_PASSWORD', ''),
+            ]
+        ),
 
         'pgsql' => [
             'driver' => 'pgsql',
@@ -108,12 +110,15 @@ return [
 
         'client' => 'predis',
 
-        'default' => [
-            'host' => env('REDIS_HOST', '127.0.0.1'),
-            'password' => env('REDIS_PASSWORD', null),
-            'port' => env('REDIS_PORT', 6379),
-            'database' => 0,
-        ],
+        'default' => array_merge(
+            json_decode(env('REDIS_DEFAULT_PARAMS'),true) ?: [ // 兼容初始配置 支持主从配置 哨兵配置 单点配置
+                'host'     => env('REDIS_HOST', '127.0.0.1'),
+                'password' => env('REDIS_PASSWORD', null),
+                'port'     => env('REDIS_PORT', 6379),
+                'database' => 0,
+            ],
+            ['options'=>(json_decode(env('REDIS_DEFAULT_OPTIONS'),true) ?: [])]
+        ),
 
     ],
 
