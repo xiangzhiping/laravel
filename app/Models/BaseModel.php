@@ -27,7 +27,7 @@ class BaseModel extends Model
      *
      * @return Model|null|array
      */
-    public static function getOneRowById($id, $fields = null, $toArray = false)
+    public static function getOneRowById($id, $fields = null, $toArray = true)
     {
         /** @var \Illuminate\Database\Eloquent\Model $model */
         $model = static::find($id, $fields ?: ['*']);
@@ -45,7 +45,7 @@ class BaseModel extends Model
      * @return Model|null|array
      * @throws
      */
-    public static function getOneRowByWhere(array $where, $options = [], $toArray = false)
+    public static function getOneRowByWhere(array $where, $options = [], $toArray = true)
     {
         $query = self::getWhereQuery($where, $options);
 
@@ -209,7 +209,7 @@ class BaseModel extends Model
      * @return mixed|static
      * @throws
      */
-    public static function getOneRowByWhereFromTable($table, $where, $options = [], $toArray = false)
+    public static function getOneRowByWhereFromTable($table, $where, $options = [], $toArray = true)
     {
         $options['table'] = $table;
         $query            = self::getWhereQuery($where, $options);
@@ -247,7 +247,7 @@ class BaseModel extends Model
      * @return array|\Illuminate\Support\Collection
      * @throws \Exception
      */
-    public static function getListByWhereFromTable($table, array $where, $options = [], $toArray = false)
+    public static function getListByWhereFromTable($table, array $where, $options = [], $toArray = true)
     {
         $options['table'] = $table;
 
@@ -260,7 +260,7 @@ class BaseModel extends Model
      * @param string $table
      * @param array  $list
      *
-     * @return mixed
+     * @return bool
      */
     public static function multiInsertFromTable($table, $list)
     {
@@ -268,11 +268,11 @@ class BaseModel extends Model
     }
 
     /**
-     * 根据条件更新
-     *
      * @param string $table
      * @param array  $where
      * @param array  $data
+     *
+     * @return int
      */
     public static function updateByWhereFromTable($table, $where, $data)
     {
@@ -292,7 +292,7 @@ class BaseModel extends Model
      *
      * @return array
      */
-    public static function getOneRowByRaw($sql, $binding = [], $toArray = false)
+    public static function getOneRowByRaw($sql, $binding = [], $toArray = true)
     {
         $data = \DB::selectOne($sql, $binding);
 
@@ -386,5 +386,138 @@ class BaseModel extends Model
         }
 
         return implode('_', $temp);
+    }
+
+    /**
+     * 按唯一键数组 获取数据 类似 主键的 in
+     *
+     * @param       $table      string 表名
+     * @param       $list       array 同一结构数据集
+     * @param array $uniqueKey  数据集中可构成唯一键的 字段数组
+     * @param array $otherField 需要返回的其他字段
+     *
+     * @return array|bool
+     */
+    public static function multiUniqueKeysSelectFromTable($table, $list, array $uniqueKey, $otherField = [])
+    {
+        if (!$table || !$list) return false;
+        $where   = [];
+        $binding = [];
+        foreach ($list as $item) {
+            $tempWhere = [];
+            foreach ($uniqueKey as $key) {
+                $tempWhere[] = sprintf('%s = ?', $key);
+                $binding[]   = $item[$key];
+            }
+            $where[] = '(' . implode(' AND ', $tempWhere) . ')';
+        }
+        $sql = 'select ' . implode(',', array_merge($uniqueKey, $otherField)) . ' from ' . $table . ' where ' . implode(' OR ', $where);
+
+        return self::getListByRaw($sql, $binding, $uniqueKey);
+    }
+
+    /**
+     * 批量更新或者插入：会造成自增主键不连续 空洞过大，慎用！！！
+     * 比较适用于自增的表
+     *
+     * @param       $table        string 表名
+     * @param       $list         array  插入更新的数据, 每个数据key必须一样
+     * @param array $updateFields 主键|唯一键重复时需要更新的进行更新的字段
+     *
+     * @return bool|int
+     */
+    public static function multiInsertOrUpdateFrom($table, $list, $updateFields = [])
+    {
+        if (!$table || !$list) return false;
+
+        $fields  = array_keys(reset($list));
+        $values  = [];
+        $binding = [];
+
+        $qArr = array_fill(0, count($fields), '?');
+        $qStr = '(' . implode(',', $qArr) . ')';
+        foreach ($list as $index => $item) {
+            $binding  = array_merge($binding, array_values($item));
+            $values[] = $qStr;
+        }
+        $sql = sprintf('insert into %s (%s) values %s', $table, implode(',', $fields), implode(',', $values));
+        $sql .= ' ON DUPLICATE KEY UPDATE ';
+        foreach ($updateFields as $field) {
+            $sql .= sprintf('%s=values(%s),', $field, $field);
+        }
+        $sql = substr($sql, 0, -1);
+
+        return \DB::statement($sql, $binding);
+    }
+
+
+    /**
+     * 生成条件
+     *
+     * @param $data    array 一条记录数据
+     * @param $keys    array 记录中进行组合条件的字段
+     * @param $binding array 绑定数据
+     *
+     * @return string 条件语句
+     */
+    private static function createCondition($data, $keys, &$binding)
+    {
+        $result = [];
+        foreach ($keys as $key) {
+            $result[]  = sprintf('%s=?', $key);
+            $binding[] = $data[$key];
+        }
+
+        return implode(' AND ', $result);
+    }
+
+    /**
+     * 批量更新
+     *
+     * @param              $table        string 表名
+     * @param              $list         ['keyvalue'=>[data]] array 主键=>更新数据关联数组
+     * @param array|string $uniqueKey    组合成的更新条件 list 元素中
+     * @param array        $updateFields 更新的字段 list元素中
+     *
+     * @return bool|int
+     */
+    public static function multiUpdateByCaseWhen($table, $list, $uniqueKey, $updateFields = [])
+    {
+        if (is_string($uniqueKey)) $uniqueKey = [$uniqueKey];
+        $whenThen = [];
+        $where    = [];
+        if (!$updateFields) {
+            $updateFields = array_diff(array_keys(reset($list)), $uniqueKey);
+        }
+        $whereBinding     = [];
+        $caseFieldBinding = [];
+        foreach ($list as $key => $data) {
+            foreach ($updateFields as $field) {
+                if (!isset($caseFieldBinding[$field])) $caseFieldBinding[$field] = [];
+                if (isset($whenThen[$field])) {
+                    $whenThen[$field] .= sprintf(' when %s then ?', self::createCondition($data, $uniqueKey, $caseFieldBinding[$field]));
+                } else {
+                    $whenThen[$field] = sprintf('%s = case when %s then ?', $field, self::createCondition($data, $uniqueKey, $caseFieldBinding[$field]));
+                }
+                $caseFieldBinding[$field][] = $data[$field];
+            }
+            $where[] = '(' . self::createCondition($data, $uniqueKey, $whereBinding) . ')';
+        }
+
+        $mergeBinding = [];
+        foreach ($caseFieldBinding as $key => $bind) {
+            $mergeBinding = array_merge($mergeBinding, $bind);
+        }
+
+        $mergeBinding = array_merge($mergeBinding, $whereBinding);
+
+        $sql = 'update ' . $table . ' set ';
+        foreach ($whenThen as $item) {
+            $sql .= $item . ' end,';
+        }
+        $sql = substr($sql, 0, -1);
+        $sql .= ' where ' . implode(' OR ', $where);
+
+        return \DB::statement($sql, $mergeBinding);
     }
 }

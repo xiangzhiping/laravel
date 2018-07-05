@@ -31,6 +31,7 @@ class Handler extends ExceptionHandler
      *
      * @param  \Exception  $exception
      * @return void
+     * @throws
      */
     public function report(Exception $exception)
     {
@@ -46,6 +47,11 @@ class Handler extends ExceptionHandler
      */
     public function render($request, Exception $exception)
     {
+        // json jsonp  响应json数据
+
+
+        // 其他响应html
+
         return parent::render($request, $exception);
     }
 }
