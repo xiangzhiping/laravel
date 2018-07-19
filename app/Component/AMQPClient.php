@@ -2,15 +2,11 @@
 
 namespace App\Component;
 
-use PhpAmqpLib\Channel\AMQPChannel;
-use PhpAmqpLib\Connection\AMQPStreamConnection;
-use PhpAmqpLib\Message\AMQPMessage;
-
 /**
  * 创建人: xzp
  * 创建时间: 2017-03-07
  */
-class RabbitMq
+class AMQPClient
 {
 
     // 基本配置：
@@ -19,8 +15,6 @@ class RabbitMq
     private $user;
     private $pwd;
     private $vhost;
-    private $conTimeout;
-    private $rwTimeout;
     private $persistent;
 
     /**
@@ -31,7 +25,7 @@ class RabbitMq
     private $checkReturn; // 是否需要检查回调
 
     /**
-     * @var AMQPStreamConnection
+     * @var \AMQPConnection
      */
     private $mq;
 
@@ -56,7 +50,7 @@ class RabbitMq
     {
         $config = config('rabbitmq');
         if (!isset($config[$host])) {
-            throw new RabbitMqException('no rabbitMq config ' . $host);
+            throw new AMQPClientException('no rabbitMq config ' . $host);
         }
 
         $this->rabbitMqConfig = $config[$host];
@@ -67,8 +61,8 @@ class RabbitMq
         $this->user       = $base_config['user'];
         $this->pwd        = $base_config['pwd'];
         $this->vhost      = $base_config['vhost'];
-        $this->conTimeout = $base_config['conTimeout'] ?? 3.0;
-        $this->rwTimeout  = $base_config['rwTimeout'] ?? 3.0;
+        $this->persistent = $base_config['persistent'] ?? false;
+
         $this->mqConnect();
     }
 
@@ -77,22 +71,15 @@ class RabbitMq
      */
     private function mqConnect()
     {
-        $this->mq = new AMQPStreamConnection(
-            $this->host,
-            $this->port,
-            $this->user,
-            $this->pwd,
-            $this->vhost,
-            false,
-            'AMQPLAIN',
-            null,
-            'en_US',
-            $this->conTimeout,
-            $this->rwTimeout,
-            null,
-            false,
-            $this->persistent ? 10 : 0 // 心跳检测 每隔10秒
-        );
+        $this->mq = new \AMQPConnection();
+        $this->mq->setHost($this->host);
+        $this->mq->setPort($this->port);
+        $this->mq->setLogin($this->user);
+        $this->mq->setPassword($this->pwd);
+        $this->mq->setVhost($this->vhost);
+        $this->mq->setWriteTimeout(3);
+        $this->mq->setReadTimeout($this->persistent ? 0 : 3);
+        $this->persistent ? $this->mq->pconnect() : $this->mq->connect();
     }
 
     /**
@@ -102,16 +89,17 @@ class RabbitMq
      * @param int    $channelId 1~65535  不要跟已有的channel弄混，不然覆盖了channel的设置
      *
      * @return mixed
+     * @throws
      */
     public function count($queue_name, $channelId = 65535)
     {
         // 使用一个无关的通道来获取队列长度
-        $channel = $this->mq->channel($channelId);
+        $channel = new \AMQPChannel($this->mq);
+        $queue   = new \AMQPQueue($channel);
+        $queue->setName($queue_name);
+        $queue->setFlags(AMQP_PASSIVE);
 
-        // see: AMQPChannel::queue_declare_ok
-        /** @var array $declare_info [queueName, message_count, consume_count] */
-        $declare_info  = $channel->queue_declare($queue_name, true);
-        $message_count = $declare_info[1];
+        $message_count = $queue->declareQueue();
 
         return $message_count;
     }
@@ -141,7 +129,7 @@ class RabbitMq
             if (!isset($this->rabbitMqConfig['channels'][$channelId])) {
                 throw new RabbitMqException('the rabbitMq config channels has no key ' . $channelId);
             }
-            $channel                    = $this->mq->channel($channelId);
+            $channel                    = new \AMQPChannel($this->mq);
             $channel                    = new Channel($channel, $this->rabbitMqConfig['channels'][$channelId]);
             $this->channels[$channelId] = $channel;
         }
@@ -155,7 +143,7 @@ class RabbitMq
     public function reconnect()
     {
         if ($this->mq) {
-            $this->mq->reconnect();
+            $this->persistent ? $this->mq->preconnect() : $this->mq->reconnect();
         } else {
             $this->mqConnect();
         }
@@ -191,7 +179,7 @@ class RabbitMq
      *
      * @param bool $auto_ack 是否拿完就消费
      *
-     * @return AMQPMessage
+     * @return \AMQPEnvelope
      *
      * @throws
      */
@@ -242,17 +230,17 @@ class RabbitMq
     /**
      * 消息确认消费
      *
-     * @param AMQPMessage $msgObj
+     * @param \AMQPEnvelope $msgObj
      */
     public function ackMsg($msgObj)
     {
-        $msgObj->delivery_info['channel']->basic_ack($msgObj->delivery_info['delivery_tag']);
+        $this->current->basic_ack($msgObj->getDeliveryTag());
     }
 
     /**
      *  处理消息：
      *
-     * @param $msgObj AMQPMessage
+     * @param $msgObj \AMQPEnvelope
      */
     public function process_message($msgObj)
     {
@@ -267,7 +255,13 @@ class RabbitMq
     {
         try {
             $this->current = null;
-            if ($this->mq) $this->mq->close();
+            if ($this->mq) {
+                if ($this->persistent) {
+                    $this->mq->pdisconnect();
+                } else {
+                    $this->mq->disconnect();
+                }
+            }
         } catch (\Exception $e) {
             // ignore
         }
@@ -285,7 +279,7 @@ class Channel
 {
 
     /**
-     * @var AMQPChannel
+     * @var \AMQPChannel
      */
     private $channel;
 
@@ -306,16 +300,26 @@ class Channel
     private $exchange_passive     = false;
 
     // 消息设置：
-    private $delivery_mode = AMQPMessage::DELIVERY_MODE_PERSISTENT;
+    private $delivery_mode = 2;
     private $writeAble     = true;
     private $format        = 'json';
 
 
     /**
+     * @var \AMQPExchange
+     */
+    private $exchange;
+
+    /**
+     * @var \AMQPQueue
+     */
+    private $queue;
+
+    /**
      * Channel constructor.
      *
-     * @param AMQPChannel $channel
-     * @param array       $channelConfig
+     * @param \AMQPChannel $channel
+     * @param array        $channelConfig
      */
     public function __construct($channel, $channelConfig)
     {
@@ -350,25 +354,72 @@ class Channel
      */
     private function setChannel()
     {
-        // 是否有写权限：
-        $this->channel->queue_declare($this->queue_name, $this->queue_passive, $this->queue_durable, $this->queue_exclusive, $this->queue_auto_delete);
+        $this->queue = $this->getQueue();
         if ($this->writeAble) { // 可写权限进行绑定
-            $this->channel->exchange_declare($this->exchange_name, $this->exchange_type, $this->exchange_passive, $this->exchange_durable, $this->exchange_auto_delete);
-            $this->channel->queue_bind($this->queue_name, $this->exchange_name, $this->routing_key);
+            $this->exchange = $this->getExchange();
+            $this->queue->bind($this->exchange_name, $this->routing_key);
         }
     }
 
     /**
+     * 创建通道队列并返回
+     *
+     * @return \AMQPQueue
+     * @throws \AMQPChannelException
+     * @throws \AMQPConnectionException
+     */
+    private function getQueue()
+    {
+        $queue = new \AMQPQueue($this->channel);
+        $queue->setName($this->queue_name);
+        $flag = AMQP_NOPARAM;
+        if ($this->queue_passive) $flag |= AMQP_PASSIVE;
+        if ($this->queue_durable) $flag |= AMQP_DURABLE;
+        if ($this->queue_auto_delete) $flag |= AMQP_AUTODELETE;
+        if ($this->queue_exclusive) $flag |= AMQP_EXCLUSIVE;
+        $queue->setFlags($flag);
+        $queue->declareQueue();
+
+        return $queue;
+    }
+
+    /**
+     * 创建exchange 并返回
+     *
+     * @return \AMQPExchange
+     * @throws \AMQPChannelException
+     * @throws \AMQPConnectionException
+     * @throws \AMQPExchangeException
+     */
+    private function getExchange()
+    {
+        $exchange = new \AMQPExchange($this->channel);
+        $exchange->setType($this->exchange_type);
+        $exchange->setName($this->exchange_name);
+        $flag = AMQP_NOPARAM;
+        if ($this->exchange_passive) $flag |= AMQP_PASSIVE;
+        if ($this->exchange_durable) $flag |= AMQP_DURABLE;
+        if ($this->exchange_auto_delete) $flag |= AMQP_AUTODELETE;
+        $exchange->setFlags($flag);
+        $exchange->declareExchange();
+
+        return $exchange;
+    }
+
+
+    /**
      * 发布一条消息
      *
-     * @param string $msg
+     * @param $msg
      *
-     * @return void
+     * @return bool
+     * @throws \AMQPChannelException
+     * @throws \AMQPConnectionException
+     * @throws \AMQPExchangeException
      */
     public function basic_publish($msg)
     {
-        $msgObj = $this->getMsgObj($msg);
-        $this->channel->basic_publish($msgObj, $this->exchange_name, $this->routing_key);
+        return $this->exchange->publish($msg, $this->routing_key, AMQP_NOPARAM, ['delivery_mode' => $this->delivery_mode]);
     }
 
     /**
@@ -376,40 +427,30 @@ class Channel
      *
      * @param array $msgList
      *
-     * @return void
+     * @throws \AMQPChannelException
+     * @throws \AMQPConnectionException
+     * @throws \AMQPExchangeException
      */
     public function batch_publish(array $msgList)
     {
         foreach ($msgList as $msg) {
-            $msgObj = $this->getMsgObj($msg);
-            $this->channel->batch_basic_publish($msgObj, $this->exchange_name, $this->routing_key);
+            $this->basic_publish($msg);
         }
-        $this->channel->publish_batch();
-    }
-
-    /**
-     * 创建消息对象
-     *
-     * @param $msg
-     *
-     * @return AMQPMessage
-     */
-    public function getMsgObj($msg)
-    {
-        return new AMQPMessage($msg, ['content_type' => $this->format, 'delivery_mode' => $this->delivery_mode]);
     }
 
 
     /**
-     * 获取一条消息 并确认消费
+     * 获取一条消息
      *
      * @param bool $auto_ack
      *
-     * @return mixed
+     * @return \AMQPEnvelope|bool
+     * @throws \AMQPChannelException
+     * @throws \AMQPConnectionException
      */
     public function basic_get($auto_ack = false)
     {
-        return $this->channel->basic_get($this->queue_name, $auto_ack);
+        return $this->queue->get($auto_ack === true ? AMQP_AUTOACK : AMQP_NOPARAM);
     }
 
     /**
@@ -417,20 +458,26 @@ class Channel
      *
      * @param $deliveryTag int 在channel中时递增的唯一的
      * @param $multi       bool 是否批量确认  true: <= $deliveryTag 都会确认消费  否则 只有 $deliveryTag 的消费
+     *
+     * @throws
      */
     public function basic_ack($deliveryTag, $multi = false)
     {
-        $deliveryTag && $this->channel->basic_ack($deliveryTag, $multi);
+        $deliveryTag && $this->queue->ack($deliveryTag, $multi ? AMQP_MULTIPLE : AMQP_NOPARAM);
     }
 
     /**
      * 限制通道消费处理能力（流量控制）
      *
      * @param int $count
+     *
+     * @return bool
+     *
+     * @throws
      */
     public function basic_qos(int $count)
     {
-        $count > 0 && $this->channel->basic_qos(null, $count, null);
+        return $count > 0 && $this->channel->qos(null, $count);
     }
 
     /**
@@ -438,13 +485,12 @@ class Channel
      *
      * @param        $callback
      * @param string $consumer_tag
+     *
+     * @throws
      */
     public function basic_consume($callback, $consumer_tag = '')
     {
-        $this->channel->basic_consume($this->queue_name, $consumer_tag, false, false, false, false, $callback);
-        while (count($this->channel->callbacks)) {
-            $this->channel->wait();
-        }
+        $this->queue->consume($callback, AMQP_NOPARAM, $consumer_tag);
     }
 
     /**
@@ -463,12 +509,9 @@ class Channel
      */
     public function close()
     {
-        try {
-            if ($this->channel) $this->channel->close();
-        } catch (\Exception $e) {
-            // ignore
-        }
-        $this->channel = null;
+        $this->queue    = null;
+        $this->exchange = null;
+        $this->channel  = null;
     }
 
     public function __destruct()
@@ -477,7 +520,7 @@ class Channel
     }
 }
 
-class RabbitMqException extends \ErrorException
+class AMQPClientException extends \ErrorException
 {
 }
 

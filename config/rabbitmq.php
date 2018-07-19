@@ -15,6 +15,7 @@ return [
             'user'  => 'guest',
             'pwd'   => 'guest',
             'vhost' => '/',
+            'persistent' => true, // 是否持久链接
         ],
         'channels' => [// 数组的键必须是数字  1 ~ 65535
             MQ_CHANNEL_DEFAULT=>[
