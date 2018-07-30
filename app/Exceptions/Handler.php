@@ -2,8 +2,11 @@
 
 namespace App\Exceptions;
 
+use App\Component\Helper;
 use Exception;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 class Handler extends ExceptionHandler
 {
@@ -29,7 +32,7 @@ class Handler extends ExceptionHandler
     /**
      * Report or log an exception.
      *
-     * @param  \Exception  $exception
+     * @param  \Exception $exception
      * @return void
      * @throws
      */
@@ -41,17 +44,22 @@ class Handler extends ExceptionHandler
     /**
      * Render an exception into an HTTP response.
      *
-     * @param  \Illuminate\Http\Request  $request
-     * @param  \Exception  $exception
+     * @param  \Illuminate\Http\Request $request
+     * @param  \Exception               $exception
      * @return \Illuminate\Http\Response
      */
     public function render($request, Exception $exception)
     {
-        // json jsonp  响应json数据
+        if ($exception instanceof ValidationException) {
+            $message = $exception->errors();
+            $message = reset($message);
+            $message = reset($message);
+        } elseif ($exception instanceof NotFoundHttpException) {
+            $message = '404 not found';
+        } else {
+            $message = $exception->getMessage();
+        }
 
-
-        // 其他响应html
-
-        return parent::render($request, $exception);
+        return Helper::jsonDump('', $message, $exception->getCode() ?: 1);
     }
 }

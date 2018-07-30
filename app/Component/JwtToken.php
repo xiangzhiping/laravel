@@ -6,6 +6,7 @@
 
 namespace App\Component;
 
+use App\Exceptions\JwtException;
 use Firebase\JWT\ExpiredException;
 use Firebase\JWT\JWT;
 
@@ -124,7 +125,7 @@ class JwtToken
     /**
      * 获取生成秘钥
      */
-    public static function getGenerateKeyByAlg($alg)
+    private static function getGenerateKeyByAlg($alg)
     {
         list($function,) = JWT::$supported_algs[$alg];
 
@@ -151,7 +152,7 @@ class JwtToken
         return $start . "\n" . wordwrap($private_key, 64, "\n", true) . "\n" . $end;
     }
 
-    public static function getPublicKey($publicKey)
+    private static function getPublicKey($publicKey)
     {
         if (!$publicKey) {
             throw new JwtException('no private_key supplied');
@@ -170,7 +171,4 @@ class JwtToken
     }
 }
 
-class JwtException extends \ErrorException
-{
-}
 
