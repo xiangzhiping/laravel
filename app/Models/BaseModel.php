@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class BaseModel extends Model
 {
+    const ZERO_DATETIME = '1970-01-01 00:00:00';
+
     /**
      * 不自动维护两个字段 created_at 和 updated_at
      *
@@ -114,6 +116,27 @@ class BaseModel extends Model
      */
     private static function getWhereQuery($where, $options = [])
     {
+        $query = self::getQueryByWhere($where, $options);
+        isset($options['order']) && $query->orderByRaw($options['order']);
+        isset($options['group']) && $query->groupBy($options['group']);
+        isset($options['fields']) && $query->select($options['fields'] ?: ['*']);
+        if (isset($options['page']) && isset($options['pageSize'])) { // 支持分页
+            $query->forPage($options['page'], $options['pageSize']);
+        }
+
+        return $query;
+    }
+
+    /**
+     * 根据条件生成query
+     *
+     * @param       $where
+     * @param array $options
+     * @return Builder
+     * @throws \ErrorException
+     */
+    private static function getQueryByWhere($where, $options = [])
+    {
         $whereIn = null;
         if (isset($where['in'])) {
             $whereIn = $where['in'];
@@ -136,12 +159,6 @@ class BaseModel extends Model
                 }
             }
         }
-        isset($options['order']) && $query->orderByRaw($options['order']);
-        isset($options['group']) && $query->groupBy($options['group']);
-        isset($options['fields']) && $query->select($options['fields'] ?: ['*']);
-        if (isset($options['page']) && isset($options['page_num'])) { // 支持分页
-            $query->forPage($options['page'], $options['page_num']);
-        }
 
         return $query;
     }
@@ -156,7 +173,7 @@ class BaseModel extends Model
      * @return array|\Illuminate\Support\Collection
      * @throws \Exception
      */
-    public static function getListByWhere(array $where, $options = [], $toArray = false)
+    public static function getListByWhere(array $where, $options = [], $toArray = true)
     {
         $query = self::getWhereQuery($where, $options);
 
@@ -164,15 +181,61 @@ class BaseModel extends Model
         $collection = $query->get();
 
         if (isset($options['index'])) {
-            $result   = [];
+            $result = [];
             $fieldKey = $options['index'];
             foreach ($collection as $item) {
+                $item = $item->toArray();
                 $result[self::getIndexKey($fieldKey, $item)] = $item;
             }
-            $collection = $result;
+
+            return $result;
         }
 
-        return $toArray ? $collection->toArray() : $collection;
+        return $toArray && $collection ? $collection->toArray() : $collection;
+    }
+
+    /**
+     * 获取查询数量
+     *
+     * @param array $where
+     * @param array $options
+     * @return int
+     * @throws \ErrorException
+     */
+    public static function getCountByWhere(array $where, $options = [])
+    {
+        $query = self::getWhereQuery($where, $options);
+
+        return $query->count();
+    }
+
+    /**
+     * 根据条件更新数据
+     *
+     * @param array $where
+     * @param array $updateData
+     * @return int
+     * @throws \ErrorException
+     */
+    public static function updateByWhere(array $where, array $updateData)
+    {
+        $query = self::getQueryByWhere($where);
+
+        return $query->update($updateData);
+    }
+
+    /**
+     * 根据条件删除
+     *
+     * @param array $where
+     * @return int
+     * @throws \ErrorException
+     */
+    public static function deleteByWhere(array $where)
+    {
+        $query = self::getQueryByWhere($where);
+
+        return $query->delete();
     }
 
     ####################################################################################################################
@@ -193,7 +256,7 @@ class BaseModel extends Model
     public static function getOneFieldByWhereFromTable($table, $where, $field)
     {
         $options['table'] = $table;
-        $query            = self::getWhereQuery($where, $options);
+        $query = self::getWhereQuery($where, $options);
 
         return $query->value($field);
     }
@@ -212,8 +275,8 @@ class BaseModel extends Model
     public static function getOneRowByWhereFromTable($table, $where, $options = [], $toArray = true)
     {
         $options['table'] = $table;
-        $query            = self::getWhereQuery($where, $options);
-        $item             = $query->first($options['fields'] ?? ['*'] ?: ['*']);
+        $query = self::getWhereQuery($where, $options);
+        $item = $query->first($options['fields'] ?? ['*'] ?: ['*']);
 
         return $toArray && $item ? (array)$item : $item;
     }
@@ -268,16 +331,53 @@ class BaseModel extends Model
     }
 
     /**
+     * 根据条件查询数量
+     *
+     * @param       $table
+     * @param array $where
+     * @return int
+     */
+    public static function getCountByWhereFromTable($table, array $where)
+    {
+        $options = ['table' => $table];
+        $query = self::getWhereQuery($where, $options);
+        return $query->count();
+    }
+
+
+    /**
+     * 根据条件更新
+     *
      * @param string $table
      * @param array  $where
      * @param array  $data
      *
      * @return int
      */
-    public static function updateByWhereFromTable($table, $where, $data)
+    public static function updateByWhereFromTable($table, array $where, $data)
     {
-        return \DB::table($table)->where($where)->update($data);
+        $options = ['table' => $table];
+
+        $query = self::getQueryByWhere($where, $options);
+
+        return $query->update($data);
     }
+
+    /**
+     * 根据条件删除
+     *
+     * @param string $table
+     * @param array  $where
+     * @return int
+     */
+    public static function deleteByWhereFromTable($table, array $where)
+    {
+        $options = ['table' => $table];
+        $query = self::getQueryByWhere($where, $options);
+
+        return $query->delete();
+    }
+
 
     ####################################################################################################################
     #                                            原生sql语句查询                                                         #
@@ -329,12 +429,12 @@ class BaseModel extends Model
         $result = [];
         if ($keyField) {
             foreach (\DB::cursor($sql, $binding) as $item) {
-                $item                     = (array)$item;
+                $item = (array)$item;
                 $result[$item[$keyField]] = $item[$valueField];
             }
         } else {
             foreach (\DB::cursor($sql, $binding) as $item) {
-                $item     = (array)$item;
+                $item = (array)$item;
                 $result[] = $item[$valueField];
             }
         }
@@ -356,12 +456,12 @@ class BaseModel extends Model
         $result = [];
         if (!is_null($index)) {
             foreach (\DB::cursor($sql, $binding) as $item) {
-                $item                                     = (array)$item;
+                $item = (array)$item;
                 $result[self::getIndexKey($index, $item)] = $item;
             }
         } else {
             foreach (\DB::cursor($sql, $binding) as $item) {
-                $item     = (array)$item;
+                $item = (array)$item;
                 $result[] = $item;
             }
         }
@@ -377,7 +477,7 @@ class BaseModel extends Model
      *
      * @return string
      */
-    private static function getIndexKey($index, array $data)
+    private static function getIndexKey($index, $data)
     {
         if (is_string($index)) $index = [$index];
         $temp = [];
@@ -401,13 +501,13 @@ class BaseModel extends Model
     public static function multiUniqueKeysSelectFromTable($table, $list, array $uniqueKey, $otherField = [])
     {
         if (!$table || !$list) return false;
-        $where   = [];
+        $where = [];
         $binding = [];
         foreach ($list as $item) {
             $tempWhere = [];
             foreach ($uniqueKey as $key) {
                 $tempWhere[] = sprintf('%s = ?', $key);
-                $binding[]   = $item[$key];
+                $binding[] = $item[$key];
             }
             $where[] = '(' . implode(' AND ', $tempWhere) . ')';
         }
@@ -430,14 +530,14 @@ class BaseModel extends Model
     {
         if (!$table || !$list) return false;
 
-        $fields  = array_keys(reset($list));
-        $values  = [];
+        $fields = array_keys(reset($list));
+        $values = [];
         $binding = [];
 
         $qArr = array_fill(0, count($fields), '?');
         $qStr = '(' . implode(',', $qArr) . ')';
         foreach ($list as $index => $item) {
-            $binding  = array_merge($binding, array_values($item));
+            $binding = array_merge($binding, array_values($item));
             $values[] = $qStr;
         }
         $sql = sprintf('insert into %s (%s) values %s', $table, implode(',', $fields), implode(',', $values));
@@ -464,7 +564,7 @@ class BaseModel extends Model
     {
         $result = [];
         foreach ($keys as $key) {
-            $result[]  = sprintf('%s=?', $key);
+            $result[] = sprintf('%s=?', $key);
             $binding[] = $data[$key];
         }
 
@@ -485,11 +585,11 @@ class BaseModel extends Model
     {
         if (is_string($uniqueKey)) $uniqueKey = [$uniqueKey];
         $whenThen = [];
-        $where    = [];
+        $where = [];
         if (!$updateFields) {
             $updateFields = array_diff(array_keys(reset($list)), $uniqueKey);
         }
-        $whereBinding     = [];
+        $whereBinding = [];
         $caseFieldBinding = [];
         foreach ($list as $key => $data) {
             foreach ($updateFields as $field) {
@@ -519,5 +619,15 @@ class BaseModel extends Model
         $sql .= ' where ' . implode(' OR ', $where);
 
         return \DB::statement($sql, $mergeBinding);
+    }
+
+    /**
+     * 获取日期时间
+     *
+     * @return mixed
+     */
+    public static function getDatetime()
+    {
+        return date('Y-m-d H:i:s');
     }
 }
